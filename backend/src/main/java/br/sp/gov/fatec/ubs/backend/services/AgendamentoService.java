@@ -13,6 +13,8 @@ import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Optional;
 
+import br.sp.gov.fatec.ubs.backend.services.FilaEsperaService.EntradaFila;
+
 @Service
 public class AgendamentoService {
     
@@ -24,6 +26,9 @@ public class AgendamentoService {
     
     @Autowired
     private PacienteRepository pacienteRepository;
+
+    @Autowired
+    private FilaEsperaService filaEsperaService;
     
     // Criar novo agendamento
     public Agendamento criarAgendamento(Long pacienteId, Long medicoId, LocalDateTime dataHora, String tipoConsulta, String observacoes) {
@@ -98,8 +103,16 @@ public class AgendamentoService {
             throw new IllegalArgumentException("Agendamento não encontrado");
         }
         
+        Agendamento.StatusAgendamento statusAnterior = agendamento.get().getStatus();
         agendamento.get().setStatus(novoStatus);
-        return agendamentoRepository.save(agendamento.get());
+        Agendamento salvo = agendamentoRepository.save(agendamento.get());
+        
+        // Se o horário acabou de ser liberado por um cancelamento, chama o próximo da fila de espera
+        if (novoStatus == Agendamento.StatusAgendamento.CANCELADO
+                && statusAnterior != Agendamento.StatusAgendamento.CANCELADO) {
+            promoverProximoDaFila(salvo.getMedico().getId(), salvo.getDataHoraConsulta());
+        }
+        return salvo;
     }
     
     // Cancelar agendamento
@@ -168,17 +181,117 @@ public class AgendamentoService {
             throw new IllegalArgumentException("Não é possível reagendar para horários no passado");
         }
         
+        LocalDateTime horarioAntigo = agendamento.getDataHoraConsulta();
         agendamento.setDataHoraConsulta(novaDataHora);
         agendamento.setStatus(Agendamento.StatusAgendamento.AGENDADO);
         
-        return agendamentoRepository.save(agendamento);
+        Agendamento salvo = agendamentoRepository.save(agendamento);
+        
+        // O horário antigo ficou livre: chama o próximo da fila de espera dele
+        promoverProximoDaFila(salvo.getMedico().getId(), horarioAntigo);
+        return salvo;
     }
     
     // Deletar agendamento
     public void deletarAgendamento(Long id) {
-        if (!agendamentoRepository.existsById(id)) {
+        Optional<Agendamento> agendamento = agendamentoRepository.findById(id);
+        if (agendamento.isEmpty()) {
             throw new IllegalArgumentException("Agendamento não encontrado");
         }
+        
+        Long medicoId = agendamento.get().getMedico().getId();
+        LocalDateTime dataHora = agendamento.get().getDataHoraConsulta();
+        boolean estavaCancelado = agendamento.get().getStatus() == Agendamento.StatusAgendamento.CANCELADO;
+        
         agendamentoRepository.deleteById(id);
+        
+        // Se o agendamento ainda ocupava o horário, ele acabou de ser liberado
+        if (!estavaCancelado) {
+            promoverProximoDaFila(medicoId, dataHora);
+        }
+    }
+    
+    // ==========================
+    // FILA DE ESPERA (estrutura de dados: Fila / Queue)
+    // ==========================
+    
+    // Paciente entra na fila de espera de um horário que já está ocupado
+    public int entrarNaFilaDeEspera(Long pacienteId, Long medicoId, LocalDateTime dataHora,
+                                    String tipoConsulta, String observacoes) {
+        if (pacienteRepository.findById(pacienteId).isEmpty()) {
+            throw new IllegalArgumentException("Paciente não encontrado");
+        }
+        
+        Optional<Medico> medico = medicoRepository.findById(medicoId);
+        if (medico.isEmpty()) {
+            throw new IllegalArgumentException("Médico não encontrado");
+        }
+        if (!medico.get().isAtivo()) {
+            throw new IllegalArgumentException("Médico não está ativo para agendamentos");
+        }
+        
+        if (dataHora.isBefore(LocalDateTime.now())) {
+            throw new IllegalArgumentException("Não é possível entrar na fila de um horário no passado");
+        }
+        
+        // Só faz sentido esperar por um horário que está ocupado
+        if (verificarDisponibilidade(medicoId, dataHora)) {
+            throw new IllegalArgumentException("Horário está livre: faça o agendamento diretamente");
+        }
+        
+        // O paciente não pode esperar por um horário que ele mesmo já ocupa
+        boolean ehDonoDoHorario = agendamentoRepository.findByPacienteId(pacienteId).stream()
+                .anyMatch(a -> a.getMedico().getId().equals(medicoId)
+                        && a.getDataHoraConsulta().equals(dataHora)
+                        && a.getStatus() != Agendamento.StatusAgendamento.CANCELADO);
+        if (ehDonoDoHorario) {
+            throw new IllegalArgumentException("Paciente já possui agendamento neste horário");
+        }
+        
+        return filaEsperaService.entrar(medicoId, dataHora, pacienteId, tipoConsulta, observacoes);
+    }
+    
+    // Paciente desiste da espera
+    public boolean sairDaFilaDeEspera(Long pacienteId, Long medicoId, LocalDateTime dataHora) {
+        return filaEsperaService.sair(medicoId, dataHora, pacienteId);
+    }
+    
+    // Consulta a fila de um horário (posição 1 = índice 0)
+    public List<EntradaFila> listarFilaDeEspera(Long medicoId, LocalDateTime dataHora) {
+        return filaEsperaService.listar(medicoId, dataHora);
+    }
+    
+    // Quando um horário libera, agenda automaticamente o primeiro da fila (FIFO).
+    // synchronized: evita que duas liberações simultâneas do mesmo horário chamem a fila ao mesmo tempo.
+    private synchronized void promoverProximoDaFila(Long medicoId, LocalDateTime dataHora) {
+        while (true) {
+            // Se outra pessoa já ocupou o horário nesse meio tempo, a fila continua intacta
+            if (!verificarDisponibilidade(medicoId, dataHora)) {
+                return;
+            }
+            
+            Optional<EntradaFila> proximo = filaEsperaService.espiarProximo(medicoId, dataHora);
+            if (proximo.isEmpty()) {
+                return;
+            }
+            
+            EntradaFila entrada = proximo.get();
+            try {
+                String obs = (entrada.observacoes() == null || entrada.observacoes().isBlank())
+                        ? "Agendado automaticamente pela fila de espera"
+                        : entrada.observacoes() + " (agendado automaticamente pela fila de espera)";
+                criarAgendamento(entrada.pacienteId(), medicoId, dataHora, entrada.tipoConsulta(), obs);
+                filaEsperaService.sair(medicoId, dataHora, entrada.pacienteId());
+                return;
+            } catch (IllegalArgumentException e) {
+                // Horário foi ocupado por outra pessoa durante a tentativa: mantém a fila
+                if (!verificarDisponibilidade(medicoId, dataHora)) {
+                    return;
+                }
+                // Senão a entrada ficou inválida (paciente removido, médico inativo, horário já passou...):
+                // descarta e tenta o próximo
+                filaEsperaService.sair(medicoId, dataHora, entrada.pacienteId());
+            }
+        }
     }
 }

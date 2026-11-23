@@ -2,6 +2,7 @@ package br.sp.gov.fatec.ubs.backend.controllers;
 
 import br.sp.gov.fatec.ubs.backend.model.Agendamento;
 import br.sp.gov.fatec.ubs.backend.services.AgendamentoService;
+import br.sp.gov.fatec.ubs.backend.services.FilaEsperaService.EntradaFila;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
@@ -175,6 +176,58 @@ public class AgendamentoController {
     public ResponseEntity<List<Agendamento>> buscarProximosAgendamentosMedico(@PathVariable Long medicoId) {
         List<Agendamento> agendamentos = agendamentoService.buscarProximosAgendamentosMedico(medicoId);
         return ResponseEntity.ok(agendamentos);
+    }
+    
+    // ==========================
+    // FILA DE ESPERA
+    // ==========================
+    
+    // Entrar na fila de espera de um horário ocupado
+    @PostMapping("/fila-espera")
+    public ResponseEntity<Map<String, Object>> entrarNaFilaDeEspera(@RequestBody Map<String, Object> request) {
+        try {
+            Long pacienteId = Long.valueOf(request.get("pacienteId").toString());
+            Long medicoId = Long.valueOf(request.get("medicoId").toString());
+            LocalDateTime dataHora = LocalDateTime.parse(request.get("dataHoraConsulta").toString());
+            String tipoConsulta = request.get("tipoConsulta").toString();
+            String observacoes = request.get("observacoes") != null ? request.get("observacoes").toString() : "";
+            
+            int posicao = agendamentoService.entrarNaFilaDeEspera(pacienteId, medicoId, dataHora, tipoConsulta, observacoes);
+            return ResponseEntity.status(201).body(Map.of("posicao", posicao));
+            
+        } catch (IllegalArgumentException e) {
+            return ResponseEntity.badRequest().body(Map.of("erro", e.getMessage()));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().body(Map.of("erro", "Dados inválidos na requisição"));
+        }
+    }
+    
+    // Ver a fila de espera de um horário (ordem de chegada: índice 0 = posição 1)
+    @GetMapping("/fila-espera")
+    public ResponseEntity<List<EntradaFila>> listarFilaDeEspera(
+            @RequestParam Long medicoId,
+            @RequestParam String dataHora) {
+        try {
+            LocalDateTime data = LocalDateTime.parse(dataHora);
+            return ResponseEntity.ok(agendamentoService.listarFilaDeEspera(medicoId, data));
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().build();
+        }
+    }
+    
+    // Sair da fila de espera
+    @DeleteMapping("/fila-espera")
+    public ResponseEntity<Void> sairDaFilaDeEspera(
+            @RequestParam Long pacienteId,
+            @RequestParam Long medicoId,
+            @RequestParam String dataHora) {
+        try {
+            LocalDateTime data = LocalDateTime.parse(dataHora);
+            boolean removeu = agendamentoService.sairDaFilaDeEspera(pacienteId, medicoId, data);
+            return removeu ? ResponseEntity.noContent().build() : ResponseEntity.notFound().build();
+        } catch (Exception e) {
+            return ResponseEntity.badRequest().build();
+        }
     }
     
     // Deletar agendamento
