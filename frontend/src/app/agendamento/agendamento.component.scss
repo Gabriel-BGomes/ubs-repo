@@ -145,3 +145,47 @@ mat-card {
     grid-template-columns: 1fr;
   }
 }
+
+.obs-cell {
+  max-width: 220px;
+  font-size: 0.85rem;
+  color: #555;
+}
+
+.fila-card {
+  max-width: 1000px;
+  margin: auto;
+  background: #fff8e1;
+  border-radius: 8px;
+
+  .fila-form {
+    grid-template-columns: 1fr auto;
+    align-items: center;
+    gap: 16px;
+  }
+
+  .fila-lista {
+    list-style: none;
+    margin: 8px 0 0;
+    padding: 0;
+
+    li {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 8px 12px;
+      border-bottom: 1px solid #e0d6b0;
+
+      .posicao { font-weight: 700; min-width: 32px; }
+      .nome { flex: 1; }
+      .hora { color: #666; font-size: 0.85rem; }
+    }
+  }
+
+  .no-data {
+    padding: 16px;
+    text-align: center;
+    color: #666;
+    font-style: italic;
+  }
+}

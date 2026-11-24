@@ -20,7 +20,7 @@ import { DateAdapter, MAT_DATE_FORMATS } from '@angular/material/core';
 import { AgendamentoService } from '../service/agendamento.service';
 import { PacienteService } from '../service/paciente.service';
 import { MedicoService } from '../service/medico.service';
-import { Agendamento, AgendamentoRequest, StatusAgendamento, TIPOS_CONSULTA } from '../model/agendamento.model';
+import { Agendamento, AgendamentoRequest, EntradaFilaEspera, StatusAgendamento, TIPOS_CONSULTA } from '../model/agendamento.model';
 import { Paciente } from '../model/paciente.model';
 import { Medico } from '../model/medico.model';
 
@@ -62,7 +62,15 @@ export class AgendamentoComponent implements OnInit, AfterViewInit {
   statusOptions = Object.values(StatusAgendamento);
   
   dataSource = new MatTableDataSource<Agendamento>();
-  displayedColumns = [ 'paciente', 'medico', 'dataHora', 'tipoConsulta', 'status', 'acoes' ];
+  displayedColumns = [ 'paciente', 'medico', 'dataHora', 'tipoConsulta', 'status', 'observacoes', 'acoes' ];
+
+  // --- FILA DE ESPERA ---
+  // Horário que está com o painel da fila aberto (null = painel fechado)
+  filaSelecionada: { medicoId: number; medicoNome: string; dataHora: string; donoNome: string; tipoConsulta: string } | null = null;
+  // Fila do horário selecionado, na ordem de chegada (índice 0 = 1º da fila)
+  fila: EntradaFilaEspera[] = [];
+  filaForm: FormGroup;
+  pacientesFilaFiltrados!: Observable<Paciente[]>;
 
   @ViewChild(MatPaginator) paginator!: MatPaginator;
 
@@ -80,6 +88,12 @@ export class AgendamentoComponent implements OnInit, AfterViewInit {
       observacoes: ['']
     });
 
+    // Formulário de entrada na fila de espera (só precisa escolher o paciente)
+    this.filaForm = this.fb.group({
+      pacienteInput: [''],
+      pacienteId: ['', Validators.required]
+    });
+
     // Inicializa o formulário de filtro
     this.filtroForm = this.fb.group({
       termoBusca: [''],
@@ -95,6 +109,13 @@ export class AgendamentoComponent implements OnInit, AfterViewInit {
       map(value => {
         const name = typeof value === 'string' ? value : value?.nomeCompleto;
         return name ? this._filtrarPacientes(name) : this.pacientes.slice();
+      })
+    );
+    this.pacientesFilaFiltrados = this.filaForm.get('pacienteInput')!.valueChanges.pipe(
+      startWith(''),
+      map(value => {
+        const texto = typeof value === 'string' ? value : value?.nomeCompleto;
+        return texto ? this._buscarPacientes(texto) : this.pacientes.slice();
       })
     );
     this.agendamentoForm.get('tipoConsulta')!.valueChanges.subscribe(tipo => {
@@ -181,7 +202,7 @@ export class AgendamentoComponent implements OnInit, AfterViewInit {
     const v = valor.toLowerCase();
     return this.pacientes.filter(p =>
       p.nomeCompleto.toLowerCase().includes(v) ||
-      p.cpf.replace(/\D/g, '').includes(v.replace(/\D/g, ''))
+      (p.cpf || '').replace(/\D/g, '').includes(v.replace(/\D/g, ''))
     );
   }
 
@@ -234,13 +255,122 @@ export class AgendamentoComponent implements OnInit, AfterViewInit {
 
   cancelarAgendamento(id: number): void {
     if (!confirm('Tem certeza que deseja cancelar este agendamento?')) return;
+    const filaAntes = [...this.fila];
     this.agendamentoService.cancelarAgendamento(id).subscribe({
       next: () => {
-        this.mostrarMensagem('Agendamento cancelado');
         this.carregarAgendamentos();
+        if (this.filaSelecionada) {
+          // O backend já chamou o 1º da fila antes de responder: atualiza o painel e avisa quem foi agendado
+          this.atualizarFilaAposLiberacao(filaAntes);
+        } else {
+          this.mostrarMensagem('Agendamento cancelado');
+        }
       },
       error: () => this.mostrarMensagem('Erro ao cancelar agendamento')
     });
+  }
+
+  // ==========================
+  // FILA DE ESPERA
+  // ==========================
+
+  // Abre o painel da fila do horário da linha clicada
+  abrirFila(ag: Agendamento): void {
+    this.filaSelecionada = {
+      medicoId: ag.medico.id as number,
+      medicoNome: ag.medico.nomeCompleto,
+      dataHora: ag.dataHoraConsulta,
+      donoNome: ag.paciente.nomeCompleto,
+      tipoConsulta: ag.tipoConsulta
+    };
+    this.fila = [];
+    this.filaForm.reset({ pacienteInput: '', pacienteId: '' });
+    this.carregarFila();
+  }
+
+  fecharFila(): void {
+    this.filaSelecionada = null;
+    this.fila = [];
+  }
+
+  private carregarFila(): void {
+    const s = this.filaSelecionada;
+    if (!s) return;
+    this.agendamentoService.listarFilaEspera(s.medicoId, s.dataHora).subscribe({
+      next: f => this.fila = f,
+      error: () => this.mostrarMensagem('Erro ao carregar a fila de espera')
+    });
+  }
+
+  entrarNaFila(): void {
+    const s = this.filaSelecionada;
+    if (!s || this.filaForm.invalid) return;
+    const req: AgendamentoRequest = {
+      pacienteId: this.filaForm.value.pacienteId,
+      medicoId: s.medicoId,
+      dataHoraConsulta: s.dataHora,
+      tipoConsulta: s.tipoConsulta
+    };
+    this.agendamentoService.entrarNaFilaEspera(req).subscribe({
+      next: r => {
+        this.mostrarMensagem(`Entrou na fila de espera na posição ${r.posicao}`);
+        this.filaForm.reset({ pacienteInput: '', pacienteId: '' });
+        this.carregarFila();
+      },
+      // O backend devolve o motivo em { erro: '...' } (ex.: já está na fila)
+      error: err => this.mostrarMensagem(err?.error?.erro ?? 'Erro ao entrar na fila de espera')
+    });
+  }
+
+  sairDaFila(entrada: EntradaFilaEspera): void {
+    const s = this.filaSelecionada;
+    if (!s) return;
+    this.agendamentoService.sairDaFilaEspera(entrada.pacienteId, s.medicoId, s.dataHora).subscribe({
+      next: () => {
+        this.mostrarMensagem('Paciente saiu da fila de espera');
+        this.carregarFila();
+      },
+      error: () => this.mostrarMensagem('Erro ao sair da fila de espera')
+    });
+  }
+
+  // Depois de um cancelamento: recarrega a fila e avisa se o 1º da fila foi agendado automaticamente
+  private atualizarFilaAposLiberacao(filaAntes: EntradaFilaEspera[]): void {
+    const s = this.filaSelecionada;
+    if (!s) return;
+    this.agendamentoService.listarFilaEspera(s.medicoId, s.dataHora).subscribe({
+      next: nova => {
+        this.fila = nova;
+        const primeiroAntes = filaAntes[0];
+        const foiPromovido = filaAntes.length > 0 && !nova.some(e => e.pacienteId === primeiroAntes.pacienteId);
+        this.mostrarMensagem(
+          foiPromovido
+            ? `Agendamento cancelado. ${this.nomePaciente(primeiroAntes.pacienteId)} era o 1º da fila e foi agendado automaticamente!`
+            : 'Agendamento cancelado'
+        );
+      },
+      error: () => this.mostrarMensagem('Agendamento cancelado')
+    });
+  }
+
+  onPacienteFilaSelecionado(p: Paciente): void {
+    this.filaForm.patchValue({ pacienteId: p.id, pacienteInput: p });
+  }
+
+  // A fila só guarda o id do paciente; o nome vem da lista de pacientes já carregada
+  nomePaciente(id: number): string {
+    return this.pacientes.find(p => p.id === id)?.nomeCompleto ?? `Paciente #${id}`;
+  }
+
+  formatarHoraEntrada(s: string): string { return new Date(s).toLocaleTimeString('pt-BR'); }
+
+  private _buscarPacientes(texto: string): Paciente[] {
+    const t = texto.toLowerCase();
+    const digitos = t.replace(/\D/g, '');
+    return this.pacientes.filter(p =>
+      p.nomeCompleto.toLowerCase().includes(t) ||
+      (digitos !== '' && (p.cpf || '').replace(/\D/g, '').includes(digitos))
+    );
   }
 
   confirmarAgendamento(id: number): void {

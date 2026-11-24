@@ -4,6 +4,7 @@ import { Observable } from 'rxjs';
 import {
   Agendamento,
   AgendamentoRequest,
+  EntradaFilaEspera,
   StatusAgendamento
 } from '../model/agendamento.model';
 
@@ -113,5 +114,28 @@ export class AgendamentoService {
 
   deletarAgendamento(id: number): Observable<void> {
     return this.http.delete<void>(`${this.apiUrl}/${id}`);
+  }
+
+  // ==========================
+  // FILA DE ESPERA
+  // ==========================
+
+  // Entra na fila de um horário já ocupado. Devolve a posição (1 = próximo a ser chamado).
+  entrarNaFilaEspera(req: AgendamentoRequest): Observable<{ posicao: number }> {
+    return this.http.post<{ posicao: number }>(`${this.apiUrl}/fila-espera`, req);
+  }
+
+  // Lista a fila de um horário, na ordem de chegada.
+  listarFilaEspera(medicoId: number, dataHora: string): Observable<EntradaFilaEspera[]> {
+    return this.http.get<EntradaFilaEspera[]>(`${this.apiUrl}/fila-espera`, {
+      params: { medicoId, dataHora }
+    });
+  }
+
+  // Paciente desiste da espera.
+  sairDaFilaEspera(pacienteId: number, medicoId: number, dataHora: string): Observable<void> {
+    return this.http.delete<void>(`${this.apiUrl}/fila-espera`, {
+      params: { pacienteId, medicoId, dataHora }
+    });
   }
 }

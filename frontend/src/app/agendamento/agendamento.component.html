@@ -85,10 +85,12 @@
         <ng-container matColumnDef="dataHora"><th mat-header-cell *matHeaderCellDef>Data e Hora</th><td mat-cell *matCellDef="let ag"> {{ formatarDataHora(ag.dataHoraConsulta) }} </td></ng-container>
         <ng-container matColumnDef="tipoConsulta"><th mat-header-cell *matHeaderCellDef>Tipo</th><td mat-cell *matCellDef="let ag"> {{ ag.tipoConsulta }} </td></ng-container>
         <ng-container matColumnDef="status"><th mat-header-cell *matHeaderCellDef>Status</th><td mat-cell *matCellDef="let ag"><mat-chip-listbox><mat-chip [color]="getStatusColor(ag.status)" selected>{{ ag.status }}</mat-chip></mat-chip-listbox></td></ng-container>
+        <ng-container matColumnDef="observacoes"><th mat-header-cell *matHeaderCellDef>Observações</th><td mat-cell *matCellDef="let ag" class="obs-cell"> {{ ag.observacoes }} </td></ng-container>
         <ng-container matColumnDef="acoes">
           <th mat-header-cell *matHeaderCellDef>Ações</th>
           <td mat-cell *matCellDef="let ag">
             <button mat-icon-button color="primary" (click)="confirmarAgendamento(ag.id)" *ngIf="ag.status === 'AGENDADO'" matTooltip="Confirmar Agendamento"><mat-icon>check_circle</mat-icon></button>
+            <button mat-icon-button color="accent" (click)="abrirFila(ag)" *ngIf="ag.status === 'AGENDADO' || ag.status === 'CONFIRMADO'" title="Ver / entrar na fila de espera deste horário"><mat-icon>hourglass_top</mat-icon></button>
             <button mat-icon-button color="warn" (click)="cancelarAgendamento(ag.id)" *ngIf="ag.status === 'AGENDADO' || ag.status === 'CONFIRMADO'" matTooltip="Cancelar Agendamento"><mat-icon>cancel</mat-icon></button>
           </td>
         </ng-container>
@@ -103,4 +105,39 @@
       <mat-paginator [pageSizeOptions]="[5, 10, 25]" showFirstLastButtons></mat-paginator>
     </div>
   </mat-card-content>
+</mat-card>
+
+<mat-card class="fila-card" *ngIf="filaSelecionada">
+  <mat-card-title>Fila de espera</mat-card-title>
+  <mat-card-subtitle>
+    Dr(a). {{ filaSelecionada.medicoNome }} – {{ formatarDataHora(filaSelecionada.dataHora) }}
+    (horário ocupado por {{ filaSelecionada.donoNome }})
+  </mat-card-subtitle>
+  <mat-card-content>
+    <form [formGroup]="filaForm" (ngSubmit)="entrarNaFila()" class="fila-form">
+      <mat-form-field appearance="outline">
+        <mat-label>Paciente que quer esperar por este horário</mat-label>
+        <input matInput formControlName="pacienteInput" [matAutocomplete]="autoPacienteFila" placeholder="Digite nome ou CPF" />
+        <mat-autocomplete #autoPacienteFila="matAutocomplete" (optionSelected)="onPacienteFilaSelecionado($event.option.value)" [displayWith]="displayPaciente">
+          <mat-option *ngFor="let p of pacientesFilaFiltrados | async" [value]="p">
+            {{ p.nomeCompleto }}{{ p.cpf ? ' – ' + p.cpf : '' }}
+          </mat-option>
+        </mat-autocomplete>
+      </mat-form-field>
+      <button mat-raised-button color="primary" type="submit" [disabled]="filaForm.invalid">Entrar na fila</button>
+    </form>
+
+    <ol class="fila-lista" *ngIf="fila.length > 0; else filaVazia">
+      <li *ngFor="let e of fila; let i = index">
+        <span class="posicao">{{ i + 1 }}º</span>
+        <span class="nome">{{ nomePaciente(e.pacienteId) }}</span>
+        <span class="hora">entrou às {{ formatarHoraEntrada(e.entrouEm) }}</span>
+        <button mat-icon-button color="warn" type="button" (click)="sairDaFila(e)" title="Sair da fila"><mat-icon>close</mat-icon></button>
+      </li>
+    </ol>
+    <ng-template #filaVazia><p class="no-data">Ninguém na fila de espera deste horário.</p></ng-template>
+  </mat-card-content>
+  <mat-card-actions align="end">
+    <button mat-button type="button" (click)="fecharFila()">Fechar</button>
+  </mat-card-actions>
 </mat-card>

@@ -29,6 +29,14 @@ export interface AgendamentoRequest {
   observacoes?: string;
 }
 
+// Fila de espera de um horário ocupado (ordem do array = ordem de chegada: índice 0 é o 1º da fila)
+export interface EntradaFilaEspera {
+  pacienteId: number;
+  tipoConsulta: string;
+  observacoes?: string;
+  entrouEm: string;
+}
+
 export const TIPOS_CONSULTA = [
   'Consulta Cardiologia',
   'Consulta Dermatologia',
